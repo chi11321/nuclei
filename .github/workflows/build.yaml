@@ -202,4 +202,49 @@ jobs:
             - **x86_64**: `libnuclei-windows-amd64.zip`
             - **ARM64**: `libnuclei-windows-arm64.zip`
 
-            ### Usage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  test:
+    name: Test ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-22.04
+            arch: amd64
+
+          - platform: darwin
+            os: macos-latest
+            arch: amd64
+
+          - platform: windows
+            os: windows-latest
+            arch: amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: libnuclei-${{ matrix.platform }}-${{ matrix.arch }}
+          path: lib
+
+      - name: Verify library
+        shell: bash
+        run: |
+          ls -lh lib/
+
+          # Check if library file exists
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            file lib/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.dll
+          elif [ "${{ matrix.platform }}" = "darwin" ]; then
+            file lib/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.dylib
+          else
+            file lib/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.so
+          fi
