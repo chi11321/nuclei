@@ -1,12 +1,17 @@
 name: Build Nuclei Dynamic Lib
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 允许手动触发
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
-  release:
-    types: [created]
+  pull_request:
+    branches:
+      - main
+      - master
 
 env:
   GO_VERSION: "1.21"
@@ -57,13 +62,6 @@ jobs:
             goarch: amd64
             output: libnuclei.dll
 
-          - platform: windows
-            os: windows-latest
-            arch: arm64
-            goos: windows
-            goarch: arm64
-            output: libnuclei.dll
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -74,28 +72,44 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Install dependencies (Linux)
-        if: matrix.platform == 'linux'
+      - name: Install dependencies (Linux ARM64)
+        if: matrix.platform == 'linux' && matrix.arch == 'arm64'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Check if source file exists
+        working-directory: ./src-tauri/ffi/nuclei
+        shell: bash
+        run: |
+          if [ ! -f libnuclei.go ]; then
+            echo "Error: libnuclei.go not found!"
+            exit 1
+          fi
+          echo "✅ libnuclei.go found"
+
       - name: Setup Go module
         working-directory: ./src-tauri/ffi/nuclei
+        shell: bash
         run: |
-          go mod init libnuclei || true
+          if [ ! -f go.mod ]; then
+            go mod init libnuclei
+          fi
           go mod tidy
 
       - name: Build dynamic library (Linux/macOS)
         if: matrix.platform != 'windows'
         working-directory: ./src-tauri/ffi/nuclei
+        shell: bash
         env:
           CGO_ENABLED: 1
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CC: ${{ matrix.arch == 'arm64' && matrix.platform == 'linux' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
         run: |
+          echo "Building for ${{ matrix.platform }}-${{ matrix.arch }}..."
           go build -buildmode=c-shared -o ${{ matrix.output }} libnuclei.go
+          ls -lh ${{ matrix.output }}
 
       - name: Build dynamic library (Windows)
         if: matrix.platform == 'windows'
@@ -105,18 +119,28 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          echo "Building for ${{ matrix.platform }}-${{ matrix.arch }}..."
           go build -buildmode=c-shared -o ${{ matrix.output }} libnuclei.go
+          dir ${{ matrix.output }}
 
       - name: Rename output
         working-directory: ./src-tauri/ffi/nuclei
         shell: bash
         run: |
-          mv ${{ matrix.output }} libnuclei-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.platform == 'windows' && '.dll' || matrix.platform == 'darwin' && '.dylib' || '.so' }}
+          EXT=""
+          case "${{ matrix.platform }}" in
+            windows) EXT=".dll" ;;
+            darwin) EXT=".dylib" ;;
+            linux) EXT=".so" ;;
+          esac
 
-          # Also rename .h file if it exists
+          mv ${{ matrix.output }} libnuclei-${{ matrix.platform }}-${{ matrix.arch }}${EXT}
+
           if [ -f libnuclei.h ]; then
             cp libnuclei.h libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.h
           fi
+
+          ls -lh libnuclei-*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -125,6 +149,7 @@ jobs:
           path: |
             src-tauri/ffi/nuclei/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.*
           retention-days: 5
+          if-no-files-found: error
 
   create-release:
     name: Create Release
@@ -149,17 +174,31 @@ jobs:
           mkdir -p release
           find artifacts -type f -name "libnuclei-*" -exec cp {} release/ \;
           cd release
+          ls -lh
 
           # Create checksums
           sha256sum * > checksums.txt
 
-          # Create archive for each platform
-          tar czf libnuclei-linux-amd64.tar.gz libnuclei-linux-amd64.*
-          tar czf libnuclei-linux-arm64.tar.gz libnuclei-linux-arm64.*
-          tar czf libnuclei-darwin-amd64.tar.gz libnuclei-darwin-amd64.*
-          tar czf libnuclei-darwin-arm64.tar.gz libnuclei-darwin-arm64.*
-          zip libnuclei-windows-amd64.zip libnuclei-windows-amd64.*
-          zip libnuclei-windows-arm64.zip libnuclei-windows-arm64.*
+          # Create archives
+          if [ -f libnuclei-linux-amd64.so ]; then
+            tar czf libnuclei-linux-amd64.tar.gz libnuclei-linux-amd64.*
+          fi
+
+          if [ -f libnuclei-linux-arm64.so ]; then
+            tar czf libnuclei-linux-arm64.tar.gz libnuclei-linux-arm64.*
+          fi
+
+          if [ -f libnuclei-darwin-amd64.dylib ]; then
+            tar czf libnuclei-darwin-amd64.tar.gz libnuclei-darwin-amd64.*
+          fi
+
+          if [ -f libnuclei-darwin-arm64.dylib ]; then
+            tar czf libnuclei-darwin-arm64.tar.gz libnuclei-darwin-arm64.*
+          fi
+
+          if [ -f libnuclei-windows-amd64.dll ]; then
+            zip libnuclei-windows-amd64.zip libnuclei-windows-amd64.*
+          fi
 
       - name: Get version
         id: get_version
@@ -171,8 +210,7 @@ jobs:
           fi
 
       - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: Release ${{ steps.get_version.outputs.VERSION }}
@@ -182,13 +220,10 @@ jobs:
             release/*.tar.gz
             release/*.zip
             release/checksums.txt
-            release/libnuclei-*
           body: |
-            ## Nuclei Dynamic Library - ${{ steps.get_version.outputs.VERSION }}
+            ## 🚀 Nuclei Dynamic Library - ${{ steps.get_version.outputs.VERSION }}
 
-            ### Downloads
-
-            Choose the appropriate file for your platform:
+            ### 📥 Downloads
 
             #### Linux
             - **x86_64**: `libnuclei-linux-amd64.tar.gz`
@@ -200,51 +235,6 @@ jobs:
 
             #### Windows
             - **x86_64**: `libnuclei-windows-amd64.zip`
-            - **ARM64**: `libnuclei-windows-arm64.zip`
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  test:
-    name: Test ${{ matrix.platform }}-${{ matrix.arch }}
-    needs: build
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            os: ubuntu-22.04
-            arch: amd64
-
-          - platform: darwin
-            os: macos-latest
-            arch: amd64
-
-          - platform: windows
-            os: windows-latest
-            arch: amd64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: libnuclei-${{ matrix.platform }}-${{ matrix.arch }}
-          path: lib
-
-      - name: Verify library
-        shell: bash
-        run: |
-          ls -lh lib/
-
-          # Check if library file exists
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            file lib/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.dll
-          elif [ "${{ matrix.platform }}" = "darwin" ]; then
-            file lib/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.dylib
-          else
-            file lib/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.so
-          fi
