@@ -62,13 +62,6 @@ jobs:
             goarch: amd64
             output: libnuclei.dll
 
-          - platform: windows
-            os: windows-latest
-            arch: arm64
-            goos: windows
-            goarch: arm64
-            output: libnuclei.dll
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -202,10 +195,6 @@ jobs:
             zip libnuclei-windows-amd64.zip libnuclei-windows-amd64.*
           fi
 
-          if [ -f libnuclei-windows-arm64.dll ]; then
-            zip libnuclei-windows-arm64.zip libnuclei-windows-arm64.*
-          fi
-
       - name: Get version
         id: get_version
         run: |
@@ -241,7 +230,6 @@ jobs:
 
             #### Windows
             - **x86_64**: `libnuclei-windows-amd64.zip`
-            - **ARM64**: `libnuclei-windows-arm64.zip`
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
