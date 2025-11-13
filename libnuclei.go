@@ -1,0 +1,314 @@
+package main
+
+/*
+#include <stdint.h>
+#include <stdlib.h>
+typedef void (*scanResultCallback)(const char*, size_t);
+
+// Helper function to call the callback from Go
+static void callScanCallback(scanResultCallback cb, const char* msg, size_t len) {
+    if (cb != NULL) {
+        cb(msg, len);
+    }
+}
+*/
+import "C"
+
+import (
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+	"unsafe"
+
+	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/levels"
+	"github.com/projectdiscovery/gologger/writer"
+	"github.com/projectdiscovery/nuclei/v3/internal/runner"
+	"github.com/projectdiscovery/nuclei/v3/pkg/catalog/config"
+	"github.com/projectdiscovery/nuclei/v3/pkg/output"
+	"github.com/projectdiscovery/nuclei/v3/pkg/types"
+	"github.com/rs/xid"
+)
+
+var (
+	scanCallback  C.scanResultCallback
+	callbackMutex sync.RWMutex
+)
+
+type MessageType int
+
+const (
+	MessageTypeLog MessageType = iota
+	MessageTypeResult
+	MessageTypeError
+	MessageTypeProgress
+	MessageTypeStatus
+)
+
+type LogLevel int
+
+const (
+	LogLevelDebug LogLevel = iota
+	LogLevelInfo
+	LogLevelWarning
+	LogLevelError
+	LogLevelFatal
+)
+
+type ScanMessage struct {
+	Type      MessageType     `json:"type"`
+	Timestamp int64           `json:"timestamp"`
+	Data      json.RawMessage `json:"data,omitempty"`
+}
+
+type LogMessage struct {
+	Level   LogLevel `json:"level"`
+	Message string   `json:"message"`
+}
+
+type ErrorMessage struct {
+	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
+}
+
+type StatusMessage struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+type ProgressMessage struct {
+	Current int    `json:"current"`
+	Total   int    `json:"total"`
+	Message string `json:"message,omitempty"`
+}
+
+//export initScanCallback
+func initScanCallback(cb C.scanResultCallback) {
+	callbackMutex.Lock()
+	defer callbackMutex.Unlock()
+	scanCallback = cb
+}
+
+func sendMessage(msgType MessageType, data interface{}) {
+	callbackMutex.RLock()
+	cb := scanCallback
+	callbackMutex.RUnlock()
+
+	if cb == nil {
+		return
+	}
+
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+
+	msg := ScanMessage{
+		Type:      msgType,
+		Timestamp: time.Now().Unix(),
+		Data:      dataJSON,
+	}
+
+	msgJSON, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+
+	cStr := C.CString(string(msgJSON))
+	defer C.free(unsafe.Pointer(cStr))
+	C.callScanCallback(cb, cStr, C.size_t(len(msgJSON)))
+}
+
+func sendLog(level LogLevel, message string) {
+	sendMessage(MessageTypeLog, LogMessage{
+		Level:   level,
+		Message: message,
+	})
+}
+
+func sendError(err error, code string) {
+	sendMessage(MessageTypeError, ErrorMessage{
+		Error: err.Error(),
+		Code:  code,
+	})
+}
+
+func sendStatus(status, message string) {
+	sendMessage(MessageTypeStatus, StatusMessage{
+		Status:  status,
+		Message: message,
+	})
+}
+
+type CustomWriter struct {
+	originalWriter writer.Writer
+}
+
+func (cw *CustomWriter) Write(p []byte, level levels.Level) {
+	var result output.ResultEvent
+	if err := json.Unmarshal(p, &result); err == nil {
+		sendMessage(MessageTypeResult, result)
+	} else {
+		sendLog(LogLevelInfo, string(p))
+	}
+
+	if cw.originalWriter != nil {
+		cw.originalWriter.Write(p, level)
+	}
+}
+
+type NucleiConfig struct {
+	Targets       []string `json:"targets"`
+	Templates     []string `json:"templates"`
+	TemplateURLs  []string `json:"template_urls"`
+	Workflows     []string `json:"workflows"`
+	Tags          []string `json:"tags"`
+	ExcludeTags   []string `json:"exclude_tags"`
+	Severity      []string `json:"severity"`
+	Output        string   `json:"output"`
+	JSON          bool     `json:"json"`
+	Verbose       bool     `json:"verbose"`
+	Silent        bool     `json:"silent"`
+	NoColor       bool     `json:"no_color"`
+	RateLimit     int      `json:"rate_limit"`
+	Timeout       int      `json:"timeout"`
+	Retries       int      `json:"retries"`
+	BulkSize      int      `json:"bulk_size"`
+	Concurrency   int      `json:"concurrency"`
+	Proxy         []string `json:"proxy"`
+	CustomHeaders []string `json:"custom_headers"`
+	InteractshURL string   `json:"interactsh_url"`
+	NoInteractsh  bool     `json:"no_interactsh"`
+	ProjectPath   string   `json:"project_path"`
+}
+
+//export nucleiScan
+func nucleiScan(configJSON *C.char) *C.char {
+	if configJSON == nil {
+		sendError(fmt.Errorf("config is null"), "NULL_CONFIG")
+		return C.CString(`{"error": "config is null"}`)
+	}
+
+	var cfg NucleiConfig
+	goConfigJSON := C.GoString(configJSON)
+	if err := json.Unmarshal([]byte(goConfigJSON), &cfg); err != nil {
+		sendError(fmt.Errorf("failed to parse config: %w", err), "PARSE_ERROR")
+		errMsg := fmt.Sprintf(`{"error": "failed to parse config: %s"}`, err.Error())
+		return C.CString(errMsg)
+	}
+
+	sendStatus("started", "Scan initialization started")
+
+	go func() {
+		if err := runNucleiScan(&cfg); err != nil {
+			sendError(err, "SCAN_ERROR")
+		} else {
+			sendStatus("completed", "Scan completed successfully")
+		}
+	}()
+
+	return C.CString(`{"status": "scan started"}`)
+}
+
+func runNucleiScan(cfg *NucleiConfig) error {
+	sendLog(LogLevelInfo, "Initializing nuclei options...")
+
+	options := &types.Options{}
+	config.CurrentAppMode = config.AppModeCLI
+
+	customWriter := &CustomWriter{}
+	logger := gologger.DefaultLogger
+	if cfg.JSON {
+		logger.SetWriter(customWriter)
+	}
+	options.Logger = logger
+
+	options.Targets = cfg.Targets
+	options.Templates = cfg.Templates
+	options.TemplateURLs = cfg.TemplateURLs
+	options.Workflows = cfg.Workflows
+	options.Tags = cfg.Tags
+	options.ExcludeTags = cfg.ExcludeTags
+	options.Output = cfg.Output
+	options.JSONL = cfg.JSON
+	options.Verbose = cfg.Verbose
+	options.Silent = cfg.Silent
+	options.NoColor = cfg.NoColor
+	options.RateLimit = cfg.RateLimit
+	options.Timeout = cfg.Timeout
+	options.Retries = cfg.Retries
+	options.BulkSize = cfg.BulkSize
+	options.TemplateThreads = cfg.Concurrency
+	options.Proxy = cfg.Proxy
+	options.CustomHeaders = cfg.CustomHeaders
+	options.InteractshURL = cfg.InteractshURL
+	options.NoInteractsh = cfg.NoInteractsh
+	options.ProjectPath = cfg.ProjectPath
+
+	if options.RateLimit == 0 {
+		options.RateLimit = 150
+	}
+	if options.Timeout == 0 {
+		options.Timeout = 10
+	}
+	if options.Retries == 0 {
+		options.Retries = 1
+	}
+	if options.BulkSize == 0 {
+		options.BulkSize = 25
+	}
+	if options.TemplateThreads == 0 {
+		options.TemplateThreads = 25
+	}
+
+	if len(cfg.Severity) > 0 {
+		if err := options.Severities.Set(cfg.Severity[0]); err != nil {
+			sendLog(LogLevelWarning, fmt.Sprintf("Invalid severity: %s", err.Error()))
+		}
+	}
+
+	options.ExecutionId = xid.New().String()
+	sendLog(LogLevelDebug, fmt.Sprintf("Execution ID: %s", options.ExecutionId))
+
+	sendLog(LogLevelInfo, "Configuring scan options...")
+	if err := runner.ConfigureOptions(); err != nil {
+		return fmt.Errorf("failed to configure options: %w", err)
+	}
+
+	runner.ParseOptions(options)
+
+	sendLog(LogLevelInfo, "Creating nuclei runner...")
+	nucleiRunner, err := runner.New(options)
+	if err != nil {
+		return fmt.Errorf("failed to create runner: %w", err)
+	}
+	if nucleiRunner == nil {
+		return fmt.Errorf("runner is nil")
+	}
+	defer nucleiRunner.Close()
+
+	sendLog(LogLevelInfo, "Starting vulnerability scan...")
+	sendStatus("scanning", "Enumeration in progress")
+
+	if err := nucleiRunner.RunEnumeration(); err != nil {
+		return fmt.Errorf("scan failed: %w", err)
+	}
+
+	sendLog(LogLevelInfo, "Scan enumeration completed")
+	return nil
+}
+
+//export nucleiVersion
+func nucleiVersion() *C.char {
+	version := config.Version
+	sendLog(LogLevelInfo, fmt.Sprintf("Nuclei version: %s", version))
+	return C.CString(version)
+}
+
+//export freeString
+func freeString(s *C.char) {
+	C.free(unsafe.Pointer(s))
+}
+
+func main() {}
