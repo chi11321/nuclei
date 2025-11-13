@@ -62,6 +62,13 @@ jobs:
             goarch: amd64
             output: libnuclei.dll
 
+          - platform: windows
+            os: windows-latest
+            arch: arm64
+            goos: windows
+            goarch: arm64
+            output: libnuclei.dll
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -79,7 +86,6 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Check if source file exists
-        working-directory: ./src-tauri/ffi/nuclei
         shell: bash
         run: |
           if [ ! -f libnuclei.go ]; then
@@ -89,7 +95,6 @@ jobs:
           echo "✅ libnuclei.go found"
 
       - name: Setup Go module
-        working-directory: ./src-tauri/ffi/nuclei
         shell: bash
         run: |
           if [ ! -f go.mod ]; then
@@ -99,7 +104,6 @@ jobs:
 
       - name: Build dynamic library (Linux/macOS)
         if: matrix.platform != 'windows'
-        working-directory: ./src-tauri/ffi/nuclei
         shell: bash
         env:
           CGO_ENABLED: 1
@@ -113,7 +117,6 @@ jobs:
 
       - name: Build dynamic library (Windows)
         if: matrix.platform == 'windows'
-        working-directory: ./src-tauri/ffi/nuclei
         env:
           CGO_ENABLED: 1
           GOOS: ${{ matrix.goos }}
@@ -124,7 +127,6 @@ jobs:
           dir ${{ matrix.output }}
 
       - name: Rename output
-        working-directory: ./src-tauri/ffi/nuclei
         shell: bash
         run: |
           EXT=""
@@ -200,6 +202,10 @@ jobs:
             zip libnuclei-windows-amd64.zip libnuclei-windows-amd64.*
           fi
 
+          if [ -f libnuclei-windows-arm64.dll ]; then
+            zip libnuclei-windows-arm64.zip libnuclei-windows-arm64.*
+          fi
+
       - name: Get version
         id: get_version
         run: |
@@ -235,6 +241,7 @@ jobs:
 
             #### Windows
             - **x86_64**: `libnuclei-windows-amd64.zip`
+            - **ARM64**: `libnuclei-windows-arm64.zip`
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
