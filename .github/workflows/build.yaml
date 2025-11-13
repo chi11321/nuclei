@@ -149,7 +149,7 @@ jobs:
         with:
           name: libnuclei-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            src-tauri/ffi/nuclei/libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.*
+            libnuclei-${{ matrix.platform }}-${{ matrix.arch }}.*
           retention-days: 5
           if-no-files-found: error
 
