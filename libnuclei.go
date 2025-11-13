@@ -3,12 +3,12 @@ package main
 /*
 #include <stdint.h>
 #include <stdlib.h>
-typedef void (*scanMessageCallback)(const char*, size_t);
+typedef void (*scanMessageCallback)(const char*, const char*, size_t);
 
 // Helper function to call the callback from Go
-static void callScanCallback(scanMessageCallback cb, const char* msg, size_t len) {
+static void callScanCallback(scanMessageCallback cb, const char* event, const char* msg, size_t len) {
     if (cb != NULL) {
-        cb(msg, len);
+        cb(event, msg, len);
     }
 }
 */
@@ -17,6 +17,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -28,6 +29,11 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 	"github.com/projectdiscovery/nuclei/v3/pkg/types"
 	"github.com/rs/xid"
+)
+
+var (
+	scanCallback  C.scanMessageCallback
+	callbackMutex sync.RWMutex
 )
 
 type MessageType int
@@ -77,7 +83,22 @@ type ProgressMessage struct {
 	Message string `json:"message,omitempty"`
 }
 
-func sendMessage(cb C.scanMessageCallback, msgType MessageType, data interface{}) {
+//export initScanCallback
+func initScanCallback(cb C.scanMessageCallback) {
+	callbackMutex.Lock()
+	defer callbackMutex.Unlock()
+	scanCallback = cb
+}
+
+func sendMessage(event string, msgType MessageType, data interface{}) {
+	callbackMutex.RLock()
+	cb := scanCallback
+	callbackMutex.RUnlock()
+
+	if cb == nil {
+		return
+	}
+
 	dataJSON, err := json.Marshal(data)
 	if err != nil {
 		return
@@ -94,27 +115,29 @@ func sendMessage(cb C.scanMessageCallback, msgType MessageType, data interface{}
 		return
 	}
 
-	cStr := C.CString(string(msgJSON))
-	defer C.free(unsafe.Pointer(cStr))
-	C.callScanCallback(cb, cStr, C.size_t(len(msgJSON)))
+	cMsg := C.CString(string(msgJSON))
+	cEvent := C.CString(event)
+	defer C.free(unsafe.Pointer(cMsg))
+	defer C.free(unsafe.Pointer(cEvent))
+	C.callScanCallback(cb, cEvent, cMsg, C.size_t(len(msgJSON)))
 }
 
-func sendLog(cb C.scanMessageCallback, level LogLevel, message string) {
-	sendMessage(cb, MessageTypeLog, LogMessage{
+func sendLog(event string, level LogLevel, message string) {
+	sendMessage(event, MessageTypeLog, LogMessage{
 		Level:   level,
 		Message: message,
 	})
 }
 
-func sendError(cb C.scanMessageCallback, err error, code string) {
-	sendMessage(cb, MessageTypeError, ErrorMessage{
+func sendError(event string, err error, code string) {
+	sendMessage(event, MessageTypeError, ErrorMessage{
 		Error: err.Error(),
 		Code:  code,
 	})
 }
 
-func sendStatus(cb C.scanMessageCallback, status, message string) {
-	sendMessage(cb, MessageTypeStatus, StatusMessage{
+func sendStatus(event string, status, message string) {
+	sendMessage(event, MessageTypeStatus, StatusMessage{
 		Status:  status,
 		Message: message,
 	})
@@ -122,15 +145,15 @@ func sendStatus(cb C.scanMessageCallback, status, message string) {
 
 type CustomWriter struct {
 	originalWriter writer.Writer
-	callback       C.scanMessageCallback
+	event          string
 }
 
 func (cw *CustomWriter) Write(p []byte, level levels.Level) {
 	var result output.ResultEvent
 	if err := json.Unmarshal(p, &result); err == nil {
-		sendMessage(cw.callback, MessageTypeResult, result)
+		sendMessage(cw.event, MessageTypeResult, result)
 	} else {
-		sendLog(cw.callback, LogLevelInfo, string(p))
+		sendLog(cw.event, LogLevelInfo, string(p))
 	}
 
 	if cw.originalWriter != nil {
@@ -164,41 +187,46 @@ type NucleiConfig struct {
 }
 
 //export nucleiScan
-func nucleiScan(callback C.scanMessageCallback, configJSON *C.char) *C.char {
+func nucleiScan(event *C.char, configJSON *C.char) *C.char {
 	if configJSON == nil {
-		sendError(callback, fmt.Errorf("config is null"), "NULL_CONFIG")
 		return C.CString(`{"error": "config is null"}`)
 	}
+
+	if event == nil {
+		return C.CString(`{"error": "event is null"}`)
+	}
+
+	goEvent := C.GoString(event)
 
 	var cfg NucleiConfig
 	goConfigJSON := C.GoString(configJSON)
 	if err := json.Unmarshal([]byte(goConfigJSON), &cfg); err != nil {
-		sendError(callback, fmt.Errorf("failed to parse config: %w", err), "PARSE_ERROR")
+		sendError(goEvent, fmt.Errorf("failed to parse config: %w", err), "PARSE_ERROR")
 		errMsg := fmt.Sprintf(`{"error": "failed to parse config: %s"}`, err.Error())
 		return C.CString(errMsg)
 	}
 
-	sendStatus(callback, "started", "Scan initialization started")
+	sendStatus(goEvent, "started", "Scan initialization started")
 
 	go func() {
-		if err := runNucleiScan(callback, &cfg); err != nil {
-			sendError(callback, err, "SCAN_ERROR")
+		if err := runNucleiScan(goEvent, &cfg); err != nil {
+			sendError(goEvent, err, "SCAN_ERROR")
 		} else {
-			sendStatus(callback, "completed", "Scan completed successfully")
+			sendStatus(goEvent, "completed", "Scan completed successfully")
 		}
 	}()
 
 	return C.CString(`{"status": "scan started"}`)
 }
 
-func runNucleiScan(callback C.scanMessageCallback, cfg *NucleiConfig) error {
-	sendLog(callback, LogLevelInfo, "Initializing nuclei options...")
+func runNucleiScan(event string, cfg *NucleiConfig) error {
+	sendLog(event, LogLevelInfo, "Initializing nuclei options...")
 
 	options := &types.Options{}
 	config.CurrentAppMode = config.AppModeCLI
 
 	customWriter := &CustomWriter{
-		callback: callback,
+		event: event,
 	}
 	logger := gologger.DefaultLogger
 	if cfg.JSON {
@@ -246,21 +274,21 @@ func runNucleiScan(callback C.scanMessageCallback, cfg *NucleiConfig) error {
 
 	if len(cfg.Severity) > 0 {
 		if err := options.Severities.Set(cfg.Severity[0]); err != nil {
-			sendLog(callback, LogLevelWarning, fmt.Sprintf("Invalid severity: %s", err.Error()))
+			sendLog(event, LogLevelWarning, fmt.Sprintf("Invalid severity: %s", err.Error()))
 		}
 	}
 
 	options.ExecutionId = xid.New().String()
-	sendLog(callback, LogLevelDebug, fmt.Sprintf("Execution ID: %s", options.ExecutionId))
+	sendLog(event, LogLevelDebug, fmt.Sprintf("Execution ID: %s", options.ExecutionId))
 
-	sendLog(callback, LogLevelInfo, "Configuring scan options...")
+	sendLog(event, LogLevelInfo, "Configuring scan options...")
 	if err := runner.ConfigureOptions(); err != nil {
 		return fmt.Errorf("failed to configure options: %w", err)
 	}
 
 	runner.ParseOptions(options)
 
-	sendLog(callback, LogLevelInfo, "Creating nuclei runner...")
+	sendLog(event, LogLevelInfo, "Creating nuclei runner...")
 	nucleiRunner, err := runner.New(options)
 	if err != nil {
 		return fmt.Errorf("failed to create runner: %w", err)
@@ -270,14 +298,14 @@ func runNucleiScan(callback C.scanMessageCallback, cfg *NucleiConfig) error {
 	}
 	defer nucleiRunner.Close()
 
-	sendLog(callback, LogLevelInfo, "Starting vulnerability scan...")
-	sendStatus(callback, "scanning", "Enumeration in progress")
+	sendLog(event, LogLevelInfo, "Starting vulnerability scan...")
+	sendStatus(event, "scanning", "Enumeration in progress")
 
 	if err := nucleiRunner.RunEnumeration(); err != nil {
 		return fmt.Errorf("scan failed: %w", err)
 	}
 
-	sendLog(callback, LogLevelInfo, "Scan enumeration completed")
+	sendLog(event, LogLevelInfo, "Scan enumeration completed")
 	return nil
 }
 
