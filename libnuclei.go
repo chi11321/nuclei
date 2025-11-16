@@ -69,7 +69,7 @@ type LogMessage struct {
 
 type ErrorMessage struct {
 	Error string `json:"error"`
-	Code  string `json:"code,omitempty"`
+	Code  uint8  `json:"code,omitempty"`
 }
 
 type StatusMessage struct {
@@ -129,7 +129,7 @@ func sendLog(event string, level LogLevel, message string) {
 	})
 }
 
-func sendError(event string, err error, code string) {
+func sendError(event string, err error, code uint8) {
 	sendMessage(event, MessageTypeError, ErrorMessage{
 		Error: err.Error(),
 		Code:  code,
@@ -201,7 +201,7 @@ func nucleiScan(event *C.char, configJSON *C.char) *C.char {
 	var cfg NucleiConfig
 	goConfigJSON := C.GoString(configJSON)
 	if err := json.Unmarshal([]byte(goConfigJSON), &cfg); err != nil {
-		sendError(goEvent, fmt.Errorf("failed to parse config: %w", err), "PARSE_ERROR")
+		sendError(goEvent, fmt.Errorf("failed to parse config: %w", err), 0)
 		errMsg := fmt.Sprintf(`{"error": "failed to parse config: %s"}`, err.Error())
 		return C.CString(errMsg)
 	}
@@ -210,7 +210,7 @@ func nucleiScan(event *C.char, configJSON *C.char) *C.char {
 
 	go func() {
 		if err := runNucleiScan(goEvent, &cfg); err != nil {
-			sendError(goEvent, err, "SCAN_ERROR")
+			sendError(goEvent, err, 1)
 		} else {
 			sendStatus(goEvent, "completed", "Scan completed successfully")
 		}
