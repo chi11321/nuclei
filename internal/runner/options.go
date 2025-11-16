@@ -65,7 +65,7 @@ func ParseOptions(options *types.Options) {
 	configureOutput(options)
 
 	// Show the user the banner
-	showBanner()
+	// showBanner()
 
 	if options.ShowVarDump {
 		vardump.EnableVarDump = true
