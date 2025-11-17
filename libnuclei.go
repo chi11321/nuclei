@@ -255,6 +255,7 @@ func runNucleiScan(event string, cfg *NucleiConfig) error {
 	options.InteractshURL = cfg.InteractshURL
 	options.NoInteractsh = cfg.NoInteractsh
 	options.ProjectPath = cfg.ProjectPath
+	options.InputFileMode = "list"
 
 	if options.RateLimit == 0 {
 		options.RateLimit = 150
