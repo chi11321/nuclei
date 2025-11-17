@@ -309,7 +309,7 @@ func (w *StandardWriter) Write(event *ResultEvent) error {
 			return fmt.Errorf("failed to marshal event: %w", err)
 		}
 		// log to kanade writer
-		w.KanadeWriter.Write(eventBytes, 0)
+		w.KanadeWriter.Write(eventBytes, 5)
 	}
 
 	// Enrich the result event with extra metadata on the template-path and url.

@@ -56,6 +56,7 @@ const (
 	LogLevelWarning
 	LogLevelError
 	LogLevelFatal
+	LogLevelTemplate
 )
 
 type ScanMessage struct {
@@ -153,7 +154,11 @@ type CustomWriter struct {
 func (cw *CustomWriter) Write(p []byte, level levels.Level) {
 	var result output.ResultEvent
 	if err := json.Unmarshal(p, &result); err == nil {
-		sendMessage(cw.event, MessageTypeResult, result)
+		if level == levels.LevelVerbose {
+			sendLog(cw.event, LogLevelTemplate, string(p))
+		} else {
+			sendMessage(cw.event, MessageTypeResult, result)
+		}
 	} else {
 		sendLog(cw.event, LogLevelInfo, string(p))
 	}
