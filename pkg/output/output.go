@@ -22,6 +22,7 @@ import (
 	"github.com/logrusorgru/aurora"
 
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/levels"
 	"github.com/projectdiscovery/gologger/writer"
 	"github.com/projectdiscovery/interactsh/pkg/server"
 	"github.com/projectdiscovery/nuclei/v3/internal/colorizer"
@@ -309,7 +310,7 @@ func (w *StandardWriter) Write(event *ResultEvent) error {
 			return fmt.Errorf("failed to marshal event: %w", err)
 		}
 		// log to kanade writer
-		w.KanadeWriter.Write(eventBytes, 5)
+		w.KanadeWriter.Write(eventBytes, levels.LevelVerbose)
 	}
 
 	// Enrich the result event with extra metadata on the template-path and url.
