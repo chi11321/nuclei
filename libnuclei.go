@@ -17,6 +17,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 	"unsafe"
@@ -28,6 +29,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog/config"
 	"github.com/projectdiscovery/nuclei/v3/pkg/output"
 	"github.com/projectdiscovery/nuclei/v3/pkg/types"
+	"github.com/projectdiscovery/nuclei/v3/pkg/types/scanstrategy"
 	"github.com/rs/xid"
 )
 
@@ -155,10 +157,6 @@ func (cw *CustomWriter) Write(p []byte, level levels.Level) {
 	} else {
 		sendLog(cw.event, LogLevelInfo, string(p))
 	}
-
-	if cw.originalWriter != nil {
-		cw.originalWriter.Write(p, level)
-	}
 }
 
 type NucleiConfig struct {
@@ -170,7 +168,6 @@ type NucleiConfig struct {
 	ExcludeTags   []string `json:"exclude_tags"`
 	Severity      []string `json:"severity"`
 	Output        string   `json:"output"`
-	JSON          bool     `json:"json"`
 	Verbose       bool     `json:"verbose"`
 	Silent        bool     `json:"silent"`
 	NoColor       bool     `json:"no_color"`
@@ -220,8 +217,6 @@ func nucleiScan(event *C.char, configJSON *C.char) *C.char {
 }
 
 func runNucleiScan(event string, cfg *NucleiConfig) error {
-	sendLog(event, LogLevelInfo, "Initializing nuclei options...")
-
 	options := &types.Options{}
 	config.CurrentAppMode = config.AppModeCLI
 
@@ -229,10 +224,9 @@ func runNucleiScan(event string, cfg *NucleiConfig) error {
 		event: event,
 	}
 	logger := gologger.DefaultLogger
-	if cfg.JSON {
-		logger.SetWriter(customWriter)
-	}
+	logger.SetWriter(customWriter)
 	options.Logger = logger
+	options.KanadeWriter = customWriter
 
 	options.Targets = cfg.Targets
 	options.Templates = cfg.Templates
@@ -241,10 +235,8 @@ func runNucleiScan(event string, cfg *NucleiConfig) error {
 	options.Tags = cfg.Tags
 	options.ExcludeTags = cfg.ExcludeTags
 	options.Output = cfg.Output
-	options.JSONL = cfg.JSON
 	options.Verbose = cfg.Verbose
 	options.Silent = cfg.Silent
-	options.NoColor = cfg.NoColor
 	options.RateLimit = cfg.RateLimit
 	options.Timeout = cfg.Timeout
 	options.Retries = cfg.Retries
@@ -254,8 +246,130 @@ func runNucleiScan(event string, cfg *NucleiConfig) error {
 	options.CustomHeaders = cfg.CustomHeaders
 	options.InteractshURL = cfg.InteractshURL
 	options.NoInteractsh = cfg.NoInteractsh
-	options.ProjectPath = cfg.ProjectPath
+	if cfg.ProjectPath != "" {
+		options.ProjectPath = cfg.ProjectPath
+	} else {
+		options.ProjectPath = os.TempDir()
+	}
 	options.InputFileMode = "list"
+	options.StoreResponseDir = "output"
+	options.InteractionsCacheSize = 5000
+	options.ScanAllIPs = false
+	options.FormatUseRequiredOnly = false
+	options.SkipFormatValidation = false
+	options.VarsTextTemplating = false
+	options.NewTemplates = false
+	options.AutomaticScan = false
+	options.Validate = false
+	options.NoStrictSyntax = false
+	options.NoColor = true
+	options.JSONL = true
+
+	options.TemplateDisplay = false
+	options.TemplateList = false
+	options.TagList = false
+	options.SignTemplates = false
+	options.EnableCodeTemplates = false
+	options.DisableUnsignedTemplates = false
+	options.EnableSelfContainedTemplates = false
+	options.EnableGlobalMatchersTemplates = false
+	options.EnableFileTemplates = false
+
+	options.StoreResponse = false
+	options.JSONRequests = true
+	options.OmitRawRequests = false
+	options.OmitTemplate = false
+	options.NoMeta = false
+	options.Timestamp = false
+	options.MatcherStatus = false
+
+	options.FollowRedirects = false
+	options.FollowHostRedirects = false
+	options.MaxRedirects = 10
+	options.DisableRedirects = false
+	options.SystemResolvers = false
+	options.DisableClustering = false
+	options.OfflineHTTP = false
+	options.ForceAttemptHTTP2 = false
+	options.EnvironmentVariables = false
+	options.ShowMatchLine = false
+	options.ZTLS = false
+	options.DialerKeepAlive = 0
+	options.AllowLocalFileAccess = false
+	options.RestrictLocalNetworkAccess = false
+	options.ResponseReadSize = 0
+	options.ResponseSaveSize = 1048576
+	options.TlsImpersonate = false
+
+	options.InteractionsEviction = 60
+	options.InteractionsPollDuration = 5
+	options.InteractionsCoolDownPeriod = 5
+
+	options.DAST = false
+	options.DASTServer = false
+	options.DASTReport = false
+	options.DASTServerAddress = "localhost:9055"
+	options.DisplayFuzzPoints = false
+	options.FuzzParamFrequency = 10
+	options.FuzzAggressionLevel = "low"
+
+	options.Uncover = false
+	options.UncoverField = "ip:port"
+	options.UncoverLimit = 100
+	options.UncoverRateLimit = 60
+
+	options.RateLimitDuration = time.Second
+	options.RateLimitMinute = 0
+	options.HeadlessBulkSize = 10
+	options.HeadlessTemplateThreads = 10
+	options.JsConcurrency = 120
+	options.PayloadConcurrency = 25
+	options.ProbeConcurrency = 50
+	options.TemplateLoadingConcurrency = types.DefaultTemplateLoadingConcurrency
+
+	options.LeaveDefaultPorts = false
+	options.MaxHostError = 30
+	options.NoHostErrors = false
+	options.Project = false
+	options.StopAtFirstMatch = false
+	options.Stream = false
+	options.ScanStrategy = scanstrategy.Auto.String()
+	options.InputReadTimeout = 3 * time.Minute
+	options.DisableHTTPProbe = false
+	options.DisableStdin = false
+
+	options.Headless = false
+	options.PageTimeout = 20
+	options.ShowBrowser = false
+	options.UseInstalledChrome = false
+	options.ShowActions = false
+
+	options.Debug = false
+	options.DebugRequests = false
+	options.DebugResponse = false
+	options.ProxyInternal = false
+	options.ListDslSignatures = false
+	options.HangMonitor = false
+	options.VerboseVerbose = false
+	options.ShowVarDump = false
+	options.VarDumpLimit = 255
+	options.EnablePprof = false
+	options.HealthCheck = false
+
+	options.UpdateTemplates = false
+
+	options.EnableProgressBar = false
+	options.StatsJSON = false
+	options.StatsInterval = 5
+	options.MetricsPort = 9092
+	options.HTTPStats = false
+
+	options.EnableCloudUpload = false
+	options.TeamID = ""
+	options.ScanID = ""
+	options.ScanName = ""
+
+	options.PreFetchSecrets = false
 
 	if options.RateLimit == 0 {
 		options.RateLimit = 150
@@ -280,16 +394,13 @@ func runNucleiScan(event string, cfg *NucleiConfig) error {
 	}
 
 	options.ExecutionId = xid.New().String()
-	sendLog(event, LogLevelDebug, fmt.Sprintf("Execution ID: %s", options.ExecutionId))
 
-	sendLog(event, LogLevelInfo, "Configuring scan options...")
 	if err := runner.ConfigureOptions(); err != nil {
 		return fmt.Errorf("failed to configure options: %w", err)
 	}
 
 	runner.ParseOptions(options)
 
-	sendLog(event, LogLevelInfo, "Creating nuclei runner...")
 	nucleiRunner, err := runner.New(options)
 	if err != nil {
 		return fmt.Errorf("failed to create runner: %w", err)
@@ -299,7 +410,6 @@ func runNucleiScan(event string, cfg *NucleiConfig) error {
 	}
 	defer nucleiRunner.Close()
 
-	sendLog(event, LogLevelInfo, "Starting vulnerability scan...")
 	sendStatus(event, "scanning", "Enumeration in progress")
 
 	if err := nucleiRunner.RunEnumeration(); err != nil {

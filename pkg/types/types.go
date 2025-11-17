@@ -10,6 +10,7 @@ import (
 
 	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/writer"
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog"
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog/config"
 	"github.com/projectdiscovery/nuclei/v3/pkg/model/types/severity"
@@ -468,7 +469,8 @@ type Options struct {
 	// this overrides the default/derived one
 	timeouts *Timeouts
 	// m is a mutex to protect timeouts from concurrent access
-	m sync.Mutex
+	m            sync.Mutex
+	KanadeWriter writer.Writer
 }
 
 func (options *Options) Copy() *Options {

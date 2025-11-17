@@ -2,6 +2,7 @@ package output
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/logrusorgru/aurora"
 
 	"github.com/projectdiscovery/gologger"
+	"github.com/projectdiscovery/gologger/writer"
 	"github.com/projectdiscovery/interactsh/pkg/server"
 	"github.com/projectdiscovery/nuclei/v3/internal/colorizer"
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog/config"
@@ -82,7 +84,8 @@ type StandardWriter struct {
 	// when using custom server code with output
 	JSONLogRequestHook func(*JSONLogRequest)
 
-	resultCount atomic.Int32
+	resultCount  atomic.Int32
+	KanadeWriter writer.Writer
 }
 
 var _ Writer = &StandardWriter{}
@@ -280,6 +283,7 @@ func NewStandardWriter(options *types.Options) (*StandardWriter, error) {
 		storeResponseDir: options.StoreResponseDir,
 		omitTemplate:     options.OmitTemplate,
 		KeysToRedact:     options.Redact,
+		KanadeWriter:     options.KanadeWriter,
 	}
 
 	if v := os.Getenv("DISABLE_STDOUT"); v == "true" || v == "1" {
@@ -297,6 +301,15 @@ func (w *StandardWriter) ResultCount() int {
 func (w *StandardWriter) Write(event *ResultEvent) error {
 	if event.Error != "" && !w.matcherStatus {
 		return nil
+	}
+
+	if w.KanadeWriter != nil {
+		eventBytes, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("failed to marshal event: %w", err)
+		}
+		// log to kanade writer
+		w.KanadeWriter.Write(eventBytes, 0)
 	}
 
 	// Enrich the result event with extra metadata on the template-path and url.
@@ -330,10 +343,10 @@ func (w *StandardWriter) Write(event *ResultEvent) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	if !w.DisableStdout {
-		_, _ = os.Stdout.Write(data)
-		_, _ = os.Stdout.Write([]byte("\n"))
-	}
+	// if !w.DisableStdout {
+	// 	_, _ = os.Stdout.Write(data)
+	// 	_, _ = os.Stdout.Write([]byte("\n"))
+	// }
 
 	if w.outputFile != nil {
 		if !w.json {
